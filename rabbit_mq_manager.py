@@ -18,7 +18,7 @@ class RabbitMQManager:
     """Manager class for RabbitMQ operations"""
     
     def __init__(self, host: str = 'localhost', port: int = 5672,
-                 username: str = 'admin', password: str = 'admin',
+                 username: str = 'guest', password: str = 'guest',
                  virtual_host: str = '/'):
         self.credentials = pika.PlainCredentials(username, password)
         self.parameters = pika.ConnectionParameters(
@@ -97,54 +97,63 @@ class RabbitMQManager:
             self.logger.error(f"Error publishing message: {str(e)}")
             return False
 
-    def subscribe_to_queue(self, queue_id: str, user_id: str) -> bool:
+    def subscribe_to_queue(self, queue_id: str, user_id: str, session_id: str) -> bool:
+        """
+        Subscribe a user session to a queue.
+        Each session gets its own exclusive queue to replay messages.
+        """
         try:
             connection = self._get_connection()
             channel = connection.channel()
 
-            # Declare the queue for the user (separate queue for each user)
-            user_queue = f"{queue_id}_sub_{user_id}"
-            channel.queue_declare(queue=user_queue, durable=True)
+            # Define the main persistent queue for storage
+            main_queue = queue_id
+            channel.queue_declare(queue=main_queue, durable=True)
 
-            # Bind the user queue to the fanout exchange to receive all messages
-            channel.queue_bind(exchange=f"{queue_id}_fanout", queue=user_queue)
+            # Define a unique session-specific queue (exclusive)
+            session_queue = f"{queue_id}_sub_{user_id}_{session_id}"
+            channel.queue_declare(queue=session_queue, durable=False, exclusive=False)
 
-            # Ensure the subscriptions dictionary is initialized
-            if queue_id not in self.subscriptions:
-                self.subscriptions[queue_id] = []
+            # Replay all existing messages from the main queue to the session queue
+            while True:
+                method_frame, properties, body = channel.basic_get(queue=main_queue, auto_ack=False)
+                if method_frame:
+                    channel.basic_publish(
+                        exchange='',
+                        routing_key=session_queue,
+                        body=body,
+                        properties=properties
+                    )
+                    channel.basic_ack(delivery_tag=method_frame.delivery_tag)
+                else:
+                    # No more messages in the main queue
+                    break
 
-            if user_id not in self.subscriptions[queue_id]:
-                self.subscriptions[queue_id].append(user_id)
+            # Bind the session queue to the fanout exchange for live updates
+            channel.exchange_declare(exchange=f"{queue_id}_fanout", exchange_type='fanout', durable=True)
+            channel.queue_bind(exchange=f"{queue_id}_fanout", queue=session_queue)
 
             connection.close()
             return True
         except Exception as e:
-            self.logger.error(f"Error subscribing to queue: {str(e)}")
+            self.logger.error(f"Error subscribing session to queue: {str(e)}")
             return False
-
-    def consume_messages(self, queue_id: str, callback, user_id: Optional[str] = None) -> None:
-        """Consume messages from a queue"""
+    
+    def consume_messages(self, queue_id: str, callback, user_id: str, session_id: str) -> None:
+        """
+        Consume messages from a user session-specific queue.
+        """
         try:
             connection = self._get_connection()
             channel = connection.channel()
 
-            # Determine which queue to consume from
-            consume_queue = queue_id
-            if user_id:
-                consume_queue = f"{queue_id}_sub_{user_id}"
-                # Declare the user-specific queue to ensure it exists
-                channel.queue_declare(queue=consume_queue, durable=True)
-
-                # Bind the user-specific queue to the fanout exchange
-                channel.queue_bind(
-                    exchange=f"{queue_id}_fanout",
-                    queue=consume_queue
-                )
+            # Determine the session-specific queue
+            session_queue = f"{queue_id}_sub_{user_id}_{session_id}"
 
             def message_handler(ch, method, properties, body):
                 try:
                     message = json.loads(body)
-                    callback(message)  # Process message
+                    callback(message)  # Process the message
                 except Exception as e:
                     self.logger.error(f"Error processing message: {str(e)}")
                 finally:
@@ -155,7 +164,7 @@ class RabbitMQManager:
 
             # Start consuming
             channel.basic_consume(
-                queue=consume_queue,
+                queue=session_queue,
                 on_message_callback=message_handler
             )
 
@@ -164,3 +173,31 @@ class RabbitMQManager:
         except Exception as e:
             self.logger.error(f"Error consuming messages: {str(e)}")
             connection.close()
+
+
+    def delete_queue(self, queue_id: str) -> bool:
+        """
+        Delete the specified queue if it exists.
+        """
+        try:
+            connection = self._get_connection()
+            channel = connection.channel()
+
+            # Check if queue exists before attempting to delete
+            queue_exists = True
+            try:
+                channel.queue_declare(queue=queue_id, passive=True)
+            except pika.exceptions.ChannelClosedByBroker:
+                queue_exists = False
+                self.logger.info(f"Queue {queue_id} does not exist.")
+            
+            if queue_exists:
+                channel.queue_delete(queue=queue_id)
+                self.logger.info(f"Queue {queue_id} has been deleted.")
+            
+            connection.close()
+            return queue_exists
+
+        except Exception as e:
+            self.logger.error(f"Error deleting queue: {str(e)}")
+            return False
