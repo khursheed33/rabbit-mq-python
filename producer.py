@@ -30,10 +30,11 @@ class MessageProducer:
 if __name__ == "__main__":
     # RabbitMQ configuration
     queue_id = "test_queue"
-    rabbitmq_manager = RabbitMQManager()
+    rabbitmq_manager = RabbitMQManager('172.52.20.37')
 
     # Ensure queue exists
     queue_config = QueueConfig(queue_id=queue_id)
+    rabbitmq_manager.delete_queue(queue_id=queue_id)
     rabbitmq_manager.create_queue(queue_config)
 
     # Create and run the producer
