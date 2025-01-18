@@ -10,7 +10,7 @@ import uvicorn
 app = FastAPI()
 
 try:
-    redis_client = redis.StrictRedis(host='192.168.1.102', port=6379, password='root', decode_responses=True)
+    redis_client = redis.StrictRedis(host='localhost', port=6379, password='root', decode_responses=True)
     redis_client.ping()  # Test the connection
     print("Redis connection successful!")
 except Exception as e:
