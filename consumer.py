@@ -26,7 +26,7 @@ class MessageConsumer:
 if __name__ == "__main__":
     # RabbitMQ configuration
     queue_id = "test_queue"
-    rabbitmq_manager = RabbitMQManager('172.52.20.37')
+    rabbitmq_manager = RabbitMQManager()
 
     # Ensure queue exists
     queue_config = QueueConfig(queue_id=queue_id)
